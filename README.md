@@ -4,7 +4,7 @@ The [`pack`](https://github.com/PackOrganization/Pack) file format is an interes
 
 This document is a work-in-progress based on reverse-engineering (I don't know Pascal), and may contain incorrect information.
 
-A `.pack` file is an sqlite3 database, but with the magic bytes of `Pack\x00\x20` rather than the usual `SQLite format 3`. This makes it impossible to use standard sqlite3 bindings to work with pack files. You'll need to build your own sqlite if you want seamless support (build with custom [`SQLITE_FILE_HEADER`](https://github.com/sqlite/sqlite/blob/378bf82e2bc09734b8c5869f9b148efe37d29527/src/btreeInt.h#L236-L250)).
+A `.pack` file is an sqlite3 database, but with the magic bytes of `Pack\x00\x20` rather than the usual `SQLite format 3`. This makes it impossible to use standard sqlite3 bindings to work with pack files. You'll need to build your own sqlite if you want seamless support (build with custom [`SQLITE_FILE_HEADER`](https://github.com/sqlite/sqlite/blob/378bf82e2bc09734b8c5869f9b148efe37d29527/src/btreeInt.h#L236-L250)) (or, use a custom VFS).
 
 The two bytes after `Pack` are actually version information, per this [comment](https://news.ycombinator.com/item?id=39801059)
 
