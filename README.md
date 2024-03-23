@@ -45,10 +45,10 @@ CREATE TABLE ItemContent(
 
 The data is stored in the `Value` column of the Content table, with potentially many files stored in a single blob.
 
-Files and directories are listed in the `Item` table.
+Files and directories are listed in the `Item` table. The root directory is implicitly ID 0 (Items with Parent=0 are therefore in the root directory). You'd probably want to put an index on `Parent`!
 
 The `ItemContent` table describes where to find the actual file contents, within the `Value` blob(s).
 
-Except wait, no it doesn't! The offsets given in `ItemContent` refer to *decompressed* offsets. This means there is no support for random access, despite the mentions of it on the landing page.
+Except wait, no it doesn't! The offsets given in `ItemContent` refer to *decompressed* offsets. This means if the file you're looking for is midway through a blob, you need to decompress it from the start. This isn't quite as bad as it sounds, because `pack` seems to limit blobs to 8MB (uncompressed size) each.
 
 There are no indexes(!).
