@@ -45,7 +45,7 @@ CREATE TABLE ItemContent(
 );
 ```
 
-The data is stored in the `Value` column of the Content table (zstd compressed), with potentially many files stored in a single blob.
+The data is stored in the `Value` column of the Content table (zstd compressed), with potentially many small files stored in a single blob (conversely, a single large file may be split over many blobs).
 
 Files and directories are listed in the `Item` table. The root directory is implicitly ID 0 (Items with Parent=0 are therefore in the root directory).
 
