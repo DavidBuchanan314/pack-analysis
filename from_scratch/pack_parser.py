@@ -24,7 +24,7 @@ class PackReader:
 		
 		# build in-memory index of ItemContents
 		self.item_contents: Dict[int, List[tuple]] = {}
-		for idx, (_, item, itempos, content, contentpos, size) in self.db.scan_table("ItemContent"):
+		for _, (_, item, itempos, content, contentpos, size) in self.db.scan_table("ItemContent"):
 			if item not in self.item_contents:
 				self.item_contents[item] = []
 			self.item_contents[item].append((itempos, content, contentpos, size))
@@ -32,24 +32,30 @@ class PackReader:
 		# possibly unnecessary, but make sure the itempos's are in ascending order
 		for v in self.item_contents.values():
 			v.sort()
+		
+		# reusable compression object for marginally better perf (supposedly)
+		self.zstd = zstandard.ZstdDecompressor()
 	
 	@lru_cache(4) # shouldn't need a big number here, if we're extracting files in order
 	def get_content(self, idx: int) -> bytes:
 		_, value = self.db.lookup_row("Content", idx)
-		return zstandard.decompress(value)
+		return self.zstd.decompress(value)
 
-	def extract_tree(self, idx: int = 0, path: list = []):
-		for child in self.dir_kids[idx]:
+	def extract_tree(self, idx: int = 0, path: list = ["/tmp"]):
+		for child in self.dir_kids.get(idx, []):
 			this_path = path + [self.names[child]]
 			strpath = "/".join(this_path)
 			kind = self.kinds[child]
 			if kind == 0:
 				print(repr(strpath))
 				with open(strpath, "wb") as f:
-					for itempos, content, contentpos, size in self.item_contents[child]:
+					for itempos, content, contentpos, size in self.item_contents.get(child, []):
 						if f.tell() != itempos:
 							raise Exception("idk")
-						f.write(self.get_content(content)[contentpos:contentpos+size])
+						region = self.get_content(content)[contentpos:contentpos+size]
+						if len(region) != size:
+							raise Exception("idk")
+						f.write(region)
 			elif kind == 1:
 				strpath += "/"
 				os.makedirs(strpath, exist_ok=True)
@@ -58,5 +64,6 @@ class PackReader:
 
 if __name__ == "__main__":
 	with open("/home/david/Downloads/MediaKit.pack", "rb") as dbfile:
+	#with open("linux.pack", "rb") as dbfile:
 		pack = PackReader(dbfile)
 		pack.extract_tree()

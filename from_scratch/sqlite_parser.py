@@ -310,9 +310,9 @@ class Database:
 			for cell_offset in hdr.cell_offsets:
 				page.seek(cell_offset)
 				left_child = parse_be_uint(page, 4)
-				rowid = parse_varint(page)
+				#rowid = parse_varint(page)
 				yield from self._scan_table_btree(left_child)
-				print("rowid", rowid)
+				#print("rowid", rowid)
 			yield from self._scan_table_btree(hdr.right_ptr)
 		elif hdr.page_type == BTreePageType.TBL_LEAF:
 			for cell_offset in hdr.cell_offsets:
