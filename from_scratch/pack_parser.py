@@ -35,12 +35,8 @@ class PackReader:
 	
 	@lru_cache(4) # shouldn't need a big number here, if we're extracting files in order
 	def get_content(self, idx: int) -> bytes:
-		# TODO: LRU cache this!
-		# TODO: proper btree search algorithm (with page cache), not linear scan!!!!
-		for this_id, (_, value) in self.db.scan_table("Content"):
-			if this_id == idx:
-				return zstandard.decompress(value)
-		raise KeyError("not found")
+		_, value = self.db.lookup_row("Content", idx)
+		return zstandard.decompress(value)
 
 	def extract_tree(self, idx: int = 0, path: list = []):
 		for child in self.dir_kids[idx]:

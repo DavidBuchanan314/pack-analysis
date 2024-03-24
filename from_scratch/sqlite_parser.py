@@ -9,6 +9,7 @@ from enum import Enum
 from dataclasses import dataclass
 from functools import lru_cache
 import struct
+import random
 import io
 
 def parse_varint(stream: BinaryIO) -> int:
@@ -248,7 +249,9 @@ class Database:
 
 	@lru_cache(128)
 	def get_btree_page(self, idx: int):
-		# TODO: LRU cache this
+		"""
+		nb: caller is responsible for seeking the returned bytesio before access
+		"""
 		self.seek_page(idx)
 		page = self.file.read(self.hdr.page_size)
 		if len(page) != self.hdr.page_size:
@@ -257,61 +260,95 @@ class Database:
 		if idx == 1: # special case for first page, skip the db header
 			pagestream.seek(100)
 		hdr = BTreePageHeader.parse(pagestream)
-		return hdr, page
+		return hdr, io.BytesIO(page)
 
 	def scan_table(self, name: str):
 		return self._scan_table_btree(self.table_roots[name])
 
+	def lookup_row(self, name: str, rowid: int):
+		return self._search_table_btree(self.table_roots[name], rowid)
+
+	def _parse_payload(self, stream: BinaryIO, payload_len: int):
+		U = self.hdr.page_size - self.hdr.rsvd_per_page
+		P = payload_len
+		X = U - 35
+		payload = io.BytesIO()
+		if P <= X:
+			buf = stream.read(payload_len)
+			if len(buf) != payload_len:
+				raise ValueError("payload underread")
+			payload.write(buf)
+		else:
+			M = ((U - 12) * 32 // 255) - 23
+			K = M + ((P - M) % (U - 4))
+			bytes_stored_in_leaf_page = K if K <= X else M
+			buf = stream.read(bytes_stored_in_leaf_page)
+			if len(buf) != bytes_stored_in_leaf_page:
+				raise ValueError("payload underread")
+			payload.write(buf)
+			payload_len -= bytes_stored_in_leaf_page
+			overflow_page = parse_be_uint(stream, 4)
+			while payload_len:
+				#print("overflow", overflow_page)
+				self.seek_page(overflow_page)
+				overflow_page = parse_be_uint(self.file, 4)
+				length_to_read = min(U - 4, payload_len)
+				buf = self.file.read(length_to_read)
+				if len(buf) != length_to_read:
+					raise ValueError("payload underread")
+				payload.write(buf)
+				payload_len -= length_to_read
+			if overflow_page:
+				raise ValueError("unexpected last overflow page")
+		payload.seek(0)
+		return parse_record(payload)
+
 	def _scan_table_btree(self, idx: int):
 		hdr, page = self.get_btree_page(idx)
-		pagestream = io.BytesIO(page)
 
 		if hdr.page_type == BTreePageType.TBL_INTERIOR:
 			for cell_offset in hdr.cell_offsets:
-				pagestream.seek(cell_offset)
-				left_child = parse_be_uint(pagestream, 4)
-				rowid = parse_varint(pagestream)
-				#print("interior", left_child, rowid)
+				page.seek(cell_offset)
+				left_child = parse_be_uint(page, 4)
+				rowid = parse_varint(page)
 				yield from self._scan_table_btree(left_child)
+				print("rowid", rowid)
 			yield from self._scan_table_btree(hdr.right_ptr)
 		elif hdr.page_type == BTreePageType.TBL_LEAF:
 			for cell_offset in hdr.cell_offsets:
-				pagestream.seek(cell_offset)
-				payload_len = parse_varint(pagestream)
-				rowid = parse_varint(pagestream)
-				U = self.hdr.page_size - self.hdr.rsvd_per_page
-				P = payload_len
-				X = U - 35
-				payload = io.BytesIO()
-				if P <= X:
-					buf = pagestream.read(payload_len)
-					if len(buf) != payload_len:
-						raise ValueError("payload underread")
-					payload.write(buf)
-				else:
-					M = ((U - 12) * 32 // 255) - 23
-					K = M + ((P - M) % (U - 4))
-					bytes_stored_in_leaf_page = K if K <= X else M
-					buf = pagestream.read(bytes_stored_in_leaf_page)
-					if len(buf) != bytes_stored_in_leaf_page:
-						raise ValueError("payload underread")
-					payload.write(buf)
-					payload_len -= bytes_stored_in_leaf_page
-					overflow_page = parse_be_uint(pagestream, 4)
-					while payload_len:
-						#print("overflow", overflow_page)
-						self.seek_page(overflow_page)
-						overflow_page = parse_be_uint(self.file, 4)
-						length_to_read = min(U - 4, payload_len)
-						buf = self.file.read(length_to_read)
-						if len(buf) != length_to_read:
-							raise ValueError("payload underread")
-						payload.write(buf)
-						payload_len -= length_to_read
-					if overflow_page:
-						raise ValueError("unexpected last overflow page")
-				payload.seek(0)
-				yield rowid, parse_record(payload)
+				page.seek(cell_offset)
+				payload_len = parse_varint(page)
+				rowid = parse_varint(page)
+				yield rowid, self._parse_payload(page, payload_len)
+		else:
+			raise NotImplementedError("TODO")
+	
+	def _search_table_btree(self, idx: int, target_rowid: int):
+		"""
+		We actually do a linear scan thru each page - unsure if it's worth
+		doing a proper binary search or not
+		"""
+		hdr, page = self.get_btree_page(idx)
+
+		if hdr.page_type == BTreePageType.TBL_INTERIOR:
+			for cell_offset in hdr.cell_offsets:
+				page.seek(cell_offset + 4)
+				rowid = parse_varint(page)
+				if rowid >= target_rowid:
+					page.seek(cell_offset)
+					left_child = parse_be_uint(page, 4)
+					return self._search_table_btree(left_child, target_rowid)
+			return self._search_table_btree(hdr.right_ptr, target_rowid)
+		elif hdr.page_type == BTreePageType.TBL_LEAF:
+			for cell_offset in hdr.cell_offsets:
+				page.seek(cell_offset)
+				payload_len = parse_varint(page)
+				rowid = parse_varint(page)
+				if rowid == target_rowid:
+					return self._parse_payload(page, payload_len)
+				# TODO: early-exit if we've gone past it?
+			else:
+				raise KeyError("row not found")
 		else:
 			raise NotImplementedError("TODO")
 
@@ -319,5 +356,13 @@ class Database:
 if __name__ == "__main__":
 	with open("test.db", "rb") as dbfile:
 		db = Database(dbfile)
+
+		# do a linear scan and record the results
+		test = {}
 		for idx, (*row,) in db.scan_table("my_table"):
 			print(idx, row)
+			test[idx] = row
+
+		# do some random accesses and check them
+		for idx in random.choices(list(test.keys()), k=50000):
+			assert(list(db.lookup_row("my_table", idx)) == test[idx])
