@@ -1,7 +1,8 @@
 
 from typing import Dict, List, BinaryIO
 import os
-import io
+from functools import lru_cache
+
 import zstandard
 
 from sqlite_parser import Database
@@ -14,16 +15,16 @@ class PackReader:
 		self.dir_kids: Dict[int, List[int]] = {}
 		self.kinds: Dict[int, int] = {}
 		self.names: Dict[int, str] = {}
-		for idx, (_, parent, kind, name) in self.db.parse_table("Item"):
+		for idx, (_, parent, kind, name) in self.db.scan_table("Item"):
 			if parent not in self.dir_kids:
 				self.dir_kids[parent] = []
 			self.dir_kids[parent].append(idx)
 			self.kinds[idx] = kind
 			self.names[idx] = name
 		
-		# build in-memory index if ItemContents
+		# build in-memory index of ItemContents
 		self.item_contents: Dict[int, List[tuple]] = {}
-		for idx, (_, item, itempos, content, contentpos, size) in self.db.parse_table("ItemContent"):
+		for idx, (_, item, itempos, content, contentpos, size) in self.db.scan_table("ItemContent"):
 			if item not in self.item_contents:
 				self.item_contents[item] = []
 			self.item_contents[item].append((itempos, content, contentpos, size))
@@ -32,10 +33,11 @@ class PackReader:
 		for v in self.item_contents.values():
 			v.sort()
 	
+	@lru_cache(4) # shouldn't need a big number here, if we're extracting files in order
 	def get_content(self, idx: int) -> bytes:
 		# TODO: LRU cache this!
 		# TODO: proper btree search algorithm (with page cache), not linear scan!!!!
-		for this_id, (_, value) in self.db.parse_table("Content"):
+		for this_id, (_, value) in self.db.scan_table("Content"):
 			if this_id == idx:
 				return zstandard.decompress(value)
 		raise KeyError("not found")

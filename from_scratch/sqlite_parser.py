@@ -7,6 +7,7 @@ https://www.sqlite.org/fileformat.html
 from typing import BinaryIO, Optional, Dict, List
 from enum import Enum
 from dataclasses import dataclass
+from functools import lru_cache
 import struct
 import io
 
@@ -188,6 +189,7 @@ class BTreePageHeader:
 	cell_content_start: int
 	fragmented_free_bytes: int
 	right_ptr: Optional[int]
+	cell_offsets: List[int]
 	
 	@classmethod
 	def parse(cls, stream: BinaryIO) -> "BTreePageHeader":
@@ -202,6 +204,8 @@ class BTreePageHeader:
 			right_ptr = parse_be_uint(stream, 4)
 		else:
 			right_ptr = None
+		
+		cell_offsets = [parse_be_uint(stream, 2) for _ in range(num_cells)]
 
 		return cls(
 			page_type=page_type,
@@ -210,6 +214,7 @@ class BTreePageHeader:
 			cell_content_start=cell_content_start,
 			fragmented_free_bytes=fragmented_free_bytes,
 			right_ptr=right_ptr,
+			cell_offsets=cell_offsets,
 		)
 
 
@@ -229,20 +234,21 @@ class Database:
 		}
 
 		# parse all of sqlite_schema
-		for idx, (type_, name, tbl_name, rootpage, sql) in self.parse_table("sqlite_schema"):
+		for idx, (type_, name, tbl_name, rootpage, sql) in self.scan_table("sqlite_schema"):
 			#print(idx, (type_, name, tbl_name, rootpage, sql))
 			if type_ == "table":
+				if name != tbl_name:
+					raise ValueError("table name mismatch")
 				self.table_roots[name] = rootpage
 				self.table_schemas[name] = sql
 				#print(name, sql)
 	
-	def seek_page(self, idx: int):
+	def seek_page(self, idx: int) -> None:
 		self.file.seek((idx - 1) * self.hdr.page_size)
 
-	def parse_table(self, name: str):
-		return self._parse_table_btree(self.table_roots[name])
-
-	def _parse_table_btree(self, idx: int):
+	@lru_cache(128)
+	def get_btree_page(self, idx: int):
+		# TODO: LRU cache this
 		self.seek_page(idx)
 		page = self.file.read(self.hdr.page_size)
 		if len(page) != self.hdr.page_size:
@@ -251,19 +257,26 @@ class Database:
 		if idx == 1: # special case for first page, skip the db header
 			pagestream.seek(100)
 		hdr = BTreePageHeader.parse(pagestream)
-		#print(hdr)
-		#assert(hdr.page_type == BTreePageType.TBL_INTERIOR) # temp?
-		
-		cell_offsets = [parse_be_uint(pagestream, 2) for _ in range(hdr.num_cells)]
-		#print("cell offsets", cell_offsets)
-		for cell_offset in cell_offsets:
-			pagestream.seek(cell_offset)
-			if hdr.page_type == BTreePageType.TBL_INTERIOR:
+		return hdr, page
+
+	def scan_table(self, name: str):
+		return self._scan_table_btree(self.table_roots[name])
+
+	def _scan_table_btree(self, idx: int):
+		hdr, page = self.get_btree_page(idx)
+		pagestream = io.BytesIO(page)
+
+		if hdr.page_type == BTreePageType.TBL_INTERIOR:
+			for cell_offset in hdr.cell_offsets:
+				pagestream.seek(cell_offset)
 				left_child = parse_be_uint(pagestream, 4)
 				rowid = parse_varint(pagestream)
 				#print("interior", left_child, rowid)
-				yield from self._parse_table_btree(left_child)
-			elif hdr.page_type == BTreePageType.TBL_LEAF:
+				yield from self._scan_table_btree(left_child)
+			yield from self._scan_table_btree(hdr.right_ptr)
+		elif hdr.page_type == BTreePageType.TBL_LEAF:
+			for cell_offset in hdr.cell_offsets:
+				pagestream.seek(cell_offset)
 				payload_len = parse_varint(pagestream)
 				rowid = parse_varint(pagestream)
 				U = self.hdr.page_size - self.hdr.rsvd_per_page
@@ -299,15 +312,12 @@ class Database:
 						raise ValueError("unexpected last overflow page")
 				payload.seek(0)
 				yield rowid, parse_record(payload)
-			else:
-				raise NotImplementedError("TODO")
-		
-		if hdr.right_ptr is not None:
-			yield from self._parse_table_btree(hdr.right_ptr)
+		else:
+			raise NotImplementedError("TODO")
 
 
 if __name__ == "__main__":
 	with open("test.db", "rb") as dbfile:
 		db = Database(dbfile)
-		for idx, (*row,) in db.parse_table("my_table"):
+		for idx, (*row,) in db.scan_table("my_table"):
 			print(idx, row)
