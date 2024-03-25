@@ -327,24 +327,15 @@ class Database:
 		while stream.tell() < (start_offset + header_len):
 			serial_types.append(parse_varint(stream))
 		
-		# we could calculate the offset of each column, if we wanted to parse out a specific one
+		# we could pre-calculate the offset of each column, if we wanted to parse out a specific one
 		# (not implemented!)
+		TYPE_LENGTHS = [0, 1, 2, 3, 4, 6, 8, 8, 0, 0]
 
 		for serial_type in serial_types:
 			if serial_type == 0:
 				yield None
-			elif serial_type == 1:
-				yield parse_be_int(stream, 1)
-			elif serial_type == 2:
-				yield parse_be_int(stream, 2)
-			elif serial_type == 3:
-				yield parse_be_int(stream, 3)
-			elif serial_type == 4:
-				yield parse_be_int(stream, 4)
-			elif serial_type == 5:
-				yield parse_be_int(stream, 6)
-			elif serial_type == 6:
-				yield parse_be_int(stream, 8)
+			elif serial_type < 7:
+				yield parse_be_int(stream, TYPE_LENGTHS[serial_type])
 			elif serial_type == 7:
 				yield struct.unpack(">d", stream.read(8))[0] # TODO: test this
 			elif serial_type == 8:
