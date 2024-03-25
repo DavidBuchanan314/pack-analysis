@@ -36,48 +36,18 @@ def parse_be_int(stream: BinaryIO, n: int) -> int:
 		raise ValueError("int underread")
 	return int.from_bytes(data, "big", signed=True)
 
-def parse_record(stream: BinaryIO):
-	start_offset = stream.tell()
-	header_len = parse_varint(stream)
-	serial_types = []
-	while stream.tell() < (start_offset + header_len):
-		serial_types.append(parse_varint(stream))
-	
-	# we could calculate the offset of each column, if we wanted to parse out a specific one
 
-	for serial_type in serial_types:
-		if serial_type == 0:
-			yield None
-		elif serial_type == 1:
-			yield parse_be_int(stream, 1)
-		elif serial_type == 2:
-			yield parse_be_int(stream, 2)
-		elif serial_type == 3:
-			yield parse_be_int(stream, 3)
-		elif serial_type == 4:
-			yield parse_be_int(stream, 4)
-		elif serial_type == 5:
-			yield parse_be_int(stream, 6)
-		elif serial_type == 6:
-			yield parse_be_int(stream, 8)
-		elif serial_type == 7:
-			yield struct.unpack(">d", stream.read(8))[0] # TODO: test this
-		elif serial_type == 8:
-			yield 0
-		elif serial_type == 9:
-			yield 1
-		elif serial_type in [10, 11]:
-			raise ValueError("unexpected")
-		else:
-			read_len, is_str = divmod(serial_type - 12, 2)
-			data = stream.read(read_len)
-			if len(data) != read_len:
-				print(len(data), read_len, data)
-				raise ValueError("blob/str underread")
-			if is_str:
-				yield data.decode()
-			else:
-				yield data
+class TextEncoding(Enum):
+	UTF8 = 1
+	UTF16LE = 2
+	UTF16BE = 3
+
+# map to something we can pass to python .encode()/.decode()
+TEXT_ENCODING_MAP = {
+	TextEncoding.UTF8: "utf-8",
+	TextEncoding.UTF16LE: "utf-16-le",
+	TextEncoding.UTF16BE: "utf-16-be",
+}
 
 @dataclass(frozen=True)
 class DatabaseHeader:
@@ -142,9 +112,7 @@ class DatabaseHeader:
 		if vacuum_thing != 0:
 			raise ValueError("unsupported")
 
-		text_encoding = parse_be_uint(stream, 4)
-		if text_encoding != 1:
-			raise ValueError(f"unsupported text encoding ({text_encoding})")
+		text_encoding = TextEncoding(parse_be_uint(stream, 4))
 		
 		user_version = parse_be_uint(stream, 4)
 		incremental_vacuum = parse_be_uint(stream, 4)
@@ -301,7 +269,7 @@ class Database:
 			if overflow_page:
 				raise ValueError("unexpected last overflow page")
 		payload.seek(0)
-		return parse_record(payload)
+		return self._parse_record(payload)
 
 	def _scan_table_btree(self, idx: int):
 		hdr, page = self.get_btree_page(idx)
@@ -351,6 +319,49 @@ class Database:
 				raise KeyError("row not found")
 		else:
 			raise NotImplementedError("TODO")
+	
+	def _parse_record(self, stream: BinaryIO):
+		start_offset = stream.tell()
+		header_len = parse_varint(stream)
+		serial_types = []
+		while stream.tell() < (start_offset + header_len):
+			serial_types.append(parse_varint(stream))
+		
+		# we could calculate the offset of each column, if we wanted to parse out a specific one
+		# (not implemented!)
+
+		for serial_type in serial_types:
+			if serial_type == 0:
+				yield None
+			elif serial_type == 1:
+				yield parse_be_int(stream, 1)
+			elif serial_type == 2:
+				yield parse_be_int(stream, 2)
+			elif serial_type == 3:
+				yield parse_be_int(stream, 3)
+			elif serial_type == 4:
+				yield parse_be_int(stream, 4)
+			elif serial_type == 5:
+				yield parse_be_int(stream, 6)
+			elif serial_type == 6:
+				yield parse_be_int(stream, 8)
+			elif serial_type == 7:
+				yield struct.unpack(">d", stream.read(8))[0] # TODO: test this
+			elif serial_type == 8:
+				yield 0
+			elif serial_type == 9:
+				yield 1
+			elif serial_type in [10, 11]:
+				raise ValueError("unexpected")
+			else:
+				read_len, is_str = divmod(serial_type - 12, 2)
+				data = stream.read(read_len)
+				if len(data) != read_len:
+					raise ValueError("blob/str underread")
+				if is_str:
+					yield data.decode(TEXT_ENCODING_MAP[self.hdr.text_encoding])
+				else:
+					yield data
 
 
 if __name__ == "__main__":
@@ -364,5 +375,5 @@ if __name__ == "__main__":
 			test[idx] = row
 
 		# do some random accesses and check them
-		for idx in random.choices(list(test.keys()), k=50000):
+		for idx in random.choices(list(test.keys()), k=20000):
 			assert(list(db.lookup_row("my_table", idx)) == test[idx])
