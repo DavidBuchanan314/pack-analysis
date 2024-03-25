@@ -77,7 +77,9 @@ class DatabaseHeader:
 			raise ValueError("not a database")
 		
 		page_size = parse_be_uint(stream, 2)
-		if page_size < 512 or page_size > 32768 or page_size.bit_count() != 1:
+		if page_size == 1:
+			page_size = 65536
+		elif page_size < 512 or page_size > 32768 or page_size.bit_count() != 1:
 			raise ValueError(f"invalid page size ({page_size})")
 		
 		write_version = parse_be_uint(stream, 1) # not checked
