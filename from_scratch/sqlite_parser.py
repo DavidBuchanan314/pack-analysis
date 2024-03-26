@@ -4,7 +4,7 @@ We treat an sqlite db as a read-only serialisation/archive format.
 https://www.sqlite.org/fileformat.html
 """
 
-from typing import BinaryIO, Optional, Dict, List
+from typing import BinaryIO, Optional, Dict, Tuple
 from enum import Enum
 from dataclasses import dataclass
 from functools import lru_cache
@@ -64,7 +64,7 @@ class DatabaseHeader:
 	first_freelist_trunk_page: int
 	freelist_page_count: int
 	schema_format: int
-	text_encoding: int
+	text_encoding: TextEncoding
 	user_version: int
 	application_id: int
 	version_valid_for_number: int
@@ -110,7 +110,7 @@ class DatabaseHeader:
 			raise ValueError(f"unsupported schema format ({schema_format})")
 
 		default_page_cache_size = parse_be_uint(stream, 4) # ignored
-		vacuum_thing = parse_be_uint(stream, 4) # ignored
+		vacuum_thing = parse_be_uint(stream, 4)
 		if vacuum_thing != 0:
 			raise ValueError("unsupported")
 
@@ -129,7 +129,7 @@ class DatabaseHeader:
 		
 		version_valid_for_number = parse_be_uint(stream, 4)
 		sqlite_version_number = parse_be_uint(stream, 4)
-
+		
 		return cls(
 			page_size=page_size,
 			write_version=write_version,
@@ -160,7 +160,7 @@ class BTreePageHeader:
 	cell_content_start: int
 	fragmented_free_bytes: int
 	right_ptr: Optional[int]
-	cell_offsets: List[int]
+	cell_offsets: Tuple[int]
 	
 	@classmethod
 	def parse(cls, stream: BinaryIO) -> "BTreePageHeader":
@@ -175,8 +175,9 @@ class BTreePageHeader:
 			right_ptr = parse_be_uint(stream, 4)
 		else:
 			right_ptr = None
-		
-		cell_offsets = [parse_be_uint(stream, 2) for _ in range(num_cells)]
+
+		# technically this isn't part of the header, but it makes sense to parse here
+		cell_offsets = tuple(x[0] for x in struct.iter_unpack(">H", stream.read(num_cells * 2)))
 
 		return cls(
 			page_type=page_type,
@@ -215,12 +216,14 @@ class Database:
 				#print(name, sql)
 	
 	def seek_page(self, idx: int) -> None:
+		# start counting from 1
 		self.file.seek((idx - 1) * self.hdr.page_size)
 
 	@lru_cache(128)
-	def get_btree_page(self, idx: int):
+	def get_btree_page(self, idx: int) -> tuple[BTreePageHeader, BinaryIO]:
 		"""
-		nb: caller is responsible for seeking the returned bytesio before access
+		NB: caller is responsible for seeking the returned BytesIO before access
+		(we might get a "used" one from the LRU cache)
 		"""
 		self.seek_page(idx)
 		page = self.file.read(self.hdr.page_size)
